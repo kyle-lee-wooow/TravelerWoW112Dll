@@ -1,0 +1,16 @@
+.vs/
+**/Debug/
+**/Release/
+**/x64/
+**/x86/
+**/Win32/
+**/obj/
+__pycache__/
+*.pyc
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.jsonl
+routes/
+heal_offsets.dat

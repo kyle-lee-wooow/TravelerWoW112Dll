@@ -1,0 +1,42 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36212.18 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TravelerWoW112Dll", "TravelerWoW112Dll\TravelerWoW112Dll.vcxproj", "{74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WowDllInjectTest", "WowDllInjectTest\WowDllInjectTest.vcxproj", "{A67BEB2D-3F70-4211-B1B0-70A07836D0E9}"
+	ProjectSection(ProjectDependencies) = postProject
+		{74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089} = {74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089}
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A67BEB2D-3F70-4211-B1B0-70A07836D0E9}.Debug|x86.ActiveCfg = Debug|Win32
+		{A67BEB2D-3F70-4211-B1B0-70A07836D0E9}.Debug|x86.Build.0 = Debug|Win32
+		{A67BEB2D-3F70-4211-B1B0-70A07836D0E9}.Release|x86.ActiveCfg = Release|Win32
+		{A67BEB2D-3F70-4211-B1B0-70A07836D0E9}.Release|x86.Build.0 = Release|Win32
+		{A67BEB2D-3F70-4211-B1B0-70A07836D0E9}.Debug|x64.ActiveCfg = Debug|x64
+		{A67BEB2D-3F70-4211-B1B0-70A07836D0E9}.Release|x64.ActiveCfg = Release|x64
+		{74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089}.Debug|x64.ActiveCfg = Debug|x64
+		{74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089}.Debug|x64.Build.0 = Debug|x64
+		{74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089}.Debug|x86.ActiveCfg = Debug|Win32
+		{74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089}.Debug|x86.Build.0 = Debug|Win32
+		{74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089}.Release|x64.ActiveCfg = Release|x64
+		{74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089}.Release|x64.Build.0 = Release|x64
+		{74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089}.Release|x86.ActiveCfg = Release|Win32
+		{74AF79C1-42F2-4F39-9B2F-6B7ECE8EA089}.Release|x86.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {5A04A560-43D5-4FFB-8CC9-BCCE662925FF}
+	EndGlobalSection
+EndGlobal
