@@ -1,5 +1,16 @@
 # External healing pipe
 
+TODO 2026-10-16 updates: drinking recognizes Food/进食 and Food & Drink in
+addition to Drink/喝水 (same 1s aura cache); sitting remains native stand-state.
+Boss policy v2 requires 5 seconds of continuously observed combat linkage and
+explicitly excludes the reported trash 卡拉赞黑暗掠夺者. Elite/high-HP inference
+remains disabled. boss_scan.policy and candidates expose raw classification,
+target GUID, HP and elapsed engagement for diagnosing client-specific mislabels.
+Candidates lost from visibility/combat linkage are removed immediately; a later
+appearance starts a new 5s window. This intentionally delays boss mode switching.
+Time gating does not guarantee all long-lived misclassified trash is excluded.
+plus_healing is still unverified; no guessed value is reported as measured.
+
 Failure reasons additionally map localized client constants to `more_powerful`,
 `not_in_view`, and `not_ready`; existing `out_of_range`, `not_enough_mana`,
 `interrupted`, `invalid_target`, `must_stand` remain. Unmapped UI errors and

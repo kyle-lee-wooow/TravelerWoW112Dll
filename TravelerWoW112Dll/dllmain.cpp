@@ -1314,6 +1314,10 @@ std::vector<uint64_t> g_bossRoster;
 uint64_t g_bossGuid = 0;
 uint32_t g_bossHp = 0, g_bossMaxHp = 0;
 std::string g_bossName, g_bossClassification;
+std::unordered_map<uint64_t, ULONGLONG> g_bossFirstSeen;
+std::vector<uint64_t> g_bossSeen;
+std::string g_bossDiagnostics;
+uint64_t g_bossScanPlayer = 0;
 
 int __cdecl ScanHealingBoss(uint64_t guid, int) {
     void* object = HealingObjectByGuid(guid);
@@ -1345,7 +1349,6 @@ int __cdecl ScanHealingBoss(uint64_t guid, int) {
     if (!engaged) return 1;
     // Elite fallback is deliberately disabled until a server-specific list/threshold exists.
     if (classification != 3) return 1;
-    if (g_bossGuid && hp >= g_bossHp) return 1;
     uintptr_t namePtr = 0;
     std::string name;
     if (ReadHealingMemory(creature, &namePtr, 4) && namePtr) {
@@ -1356,12 +1359,34 @@ int __cdecl ScanHealingBoss(uint64_t guid, int) {
             name += ch;
         }
     }
+    const bool excluded = name == "卡拉赞黑暗掠夺者";
+    const ULONGLONG now = GetTickCount64();
+    g_bossSeen.push_back(guid);
+    const auto inserted = g_bossFirstSeen.emplace(guid, now);
+    const ULONGLONG elapsed = now - inserted.first->second;
+    if (g_bossSeen.size() <= 40) {
+        if (!g_bossDiagnostics.empty()) g_bossDiagnostics += ',';
+        g_bossDiagnostics += "{\"guid\":\"" + std::to_string(guid) + "\",\"name\":" + HealingJsonString(name)
+            + ",\"raw_classification\":" + std::to_string(classification)
+            + ",\"target_guid\":\"" + std::to_string(target) + "\",\"hp\":" + std::to_string(hp)
+            + ",\"max_hp\":" + std::to_string(maxhp) + ",\"engaged_ms\":" + std::to_string(elapsed)
+            + ",\"excluded\":" + (excluded ? "true" : "false") + "}";
+    }
+    // Known false positive is explicitly excluded; time gate alone cannot exclude trash.
+    if (excluded || name.empty() || elapsed < 5000) return 1;
+    if (g_bossGuid && hp >= g_bossHp) return 1;
     g_bossGuid = guid; g_bossHp = hp; g_bossMaxHp = maxhp;
     g_bossName = name; g_bossClassification = "worldboss";
     return 1;
 }
 
 void AppendHealingBoss(std::ostringstream& json, const std::vector<HealingPetOwner>& owners) {
+    if (g_bossScanPlayer != GetPlayerGuid()) {
+        g_bossFirstSeen.clear();
+        g_bossScanPlayer = GetPlayerGuid();
+    }
+    g_bossSeen.clear();
+    g_bossDiagnostics.clear();
     g_bossRoster.clear();
     for (const auto& owner : owners) {
         g_bossRoster.push_back(owner.guid);
@@ -1370,6 +1395,11 @@ void AppendHealingBoss(std::ostringstream& json, const std::vector<HealingPetOwn
     }
     g_bossGuid = 0;
     EnumerateVisibleObjects(reinterpret_cast<void*>(ScanHealingBoss), 0);
+    for (auto i = g_bossFirstSeen.begin(); i != g_bossFirstSeen.end();) {
+        if (std::find(g_bossSeen.begin(), g_bossSeen.end(), i->first) == g_bossSeen.end()) i = g_bossFirstSeen.erase(i);
+        else ++i;
+    }
+    json << ",\"boss_scan\":{\"policy\":\"worldboss_5s_exclusions_v2\",\"candidates\":[" << g_bossDiagnostics << "]}";
     json << ",\"boss\":";
     if (!g_bossGuid) { json << "null"; return; }
     json << "{\"guid\":\"" << g_bossGuid << "\",\"name\":" << HealingJsonString(g_bossName)
@@ -1468,7 +1498,9 @@ std::string ReadHealingState() {
         << (moving ? "true" : "false");
     if (buffsValid) {
         bool drinking = false;
-        for (const auto& name : ownBuffs) if (name == "喝水" || name == "Drink") drinking = true;
+        for (const auto& name : ownBuffs)
+            if (name == "喝水" || name == "Drink" || name == "进食" || name == "Food"
+                || name == "饮食" || name == "Food & Drink" || name == "Food and Drink") drinking = true;
         json << ",\"buffs\":" << HealingNamesJson(ownBuffs)
             << ",\"drinking\":" << (drinking ? "true" : "false");
     }
