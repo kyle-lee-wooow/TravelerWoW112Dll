@@ -25,6 +25,17 @@ if not Traveler112CastObserver then
  end
  local function reason(message)
   if type(message)~='string' then return 'unknown' end
+  -- Resolve localized client globals, never return localized text over the pipe.
+  local function matches(keys)
+   for _,key in ipairs(keys) do
+    local value=getglobal(key)
+    if type(value)=='string' and value==message then return true end
+   end
+   return false
+  end
+  if matches({'SPELL_FAILED_AURA_BOUNCED','SPELL_FAILED_MORE_POWERFUL_SPELL_ACTIVE','ERR_SPELL_FAILED_AURA_BOUNCED','ERR_SPELL_FAILED_MORE_POWERFUL_SPELL_ACTIVE'}) then return 'more_powerful' end
+  if matches({'SPELL_FAILED_LINE_OF_SIGHT','SPELL_FAILED_VISION_OBSCURED','ERR_SPELL_FAILED_LINE_OF_SIGHT','ERR_SPELL_FAILED_VISION_OBSCURED'}) then return 'not_in_view' end
+  if matches({'SPELL_FAILED_NOT_READY','SPELL_FAILED_SPELL_IN_PROGRESS','SPELL_FAILED_COOLDOWN','ERR_SPELL_COOLDOWN','ERR_ABILITY_COOLDOWN','ERR_ITEM_COOLDOWN','ERR_SPELL_FAILED_NOT_READY'}) then return 'not_ready' end
   if message==SPELL_FAILED_OUT_OF_RANGE or message==ERR_OUT_OF_RANGE then return 'out_of_range' end
   if message==SPELL_FAILED_NO_POWER or message==ERR_OUT_OF_MANA then return 'not_enough_mana' end
   if message==SPELL_FAILED_INTERRUPTED or message==SPELL_FAILED_INTERRUPTED_COMBAT then return 'interrupted' end
@@ -64,20 +75,25 @@ if not Traveler112CastObserver then
   elseif event=='SPELLCAST_FAILED' or event=='SPELLCAST_INTERRUPTED' then
    f.active=false Traveler112CastEnd=0 Traveler112CastName=''
    if event=='SPELLCAST_INTERRUPTED' then finish(false,'interrupted')
-   elseif f.pending then f.failedAt=GetTime() f.stopAt=nil end
+   elseif f.pending then f.failedAt=f.failedAt or GetTime() f.stopAt=nil end
   elseif event=='SPELLCAST_STOP' or event=='SPELLCAST_CHANNEL_STOP' then
    local wasActive=f.active
    local earlyChannel=event=='SPELLCAST_CHANNEL_STOP' and Traveler112CastEnd-GetTime()>0.1
    f.active=false Traveler112CastEnd=0 Traveler112CastName=''
    if f.pending and (f.started or (not wasActive and not f.wasActive)) then
-    if f.cancelRequested or earlyChannel then finish(false,'interrupted') else f.stopAt=GetTime() end
+    if f.cancelRequested or earlyChannel then finish(false,'interrupted')
+    elseif not f.failedAt then f.stopAt=GetTime() end
    end
   elseif event=='UI_ERROR_MESSAGE' then
-   if f.pending and (f.started or GetTime()-f.beginAt<1) then finish(false,reason(arg1)) end
+   if f.pending and (f.started or f.failedAt or GetTime()-f.beginAt<2) then
+    local code=reason(arg1)
+    if code~='unknown' then finish(false,code)
+    else f.failedAt=f.failedAt or GetTime() f.stopAt=nil end
+   end
   end
  end)
  f:SetScript('OnUpdate',function()
-  if f.failedAt and GetTime()-f.failedAt>=0.1 then finish(false,'unknown') end
+  if f.failedAt and GetTime()-f.failedAt>=0.35 then finish(false,'unknown') end
   if f.stopAt and GetTime()-f.stopAt>=0.1 then finish(true,'') end
   -- Missing events never imply successful casting.
   if f.pending and not f.started and GetTime()-f.beginAt>2 then finish(false,'unknown',false) end

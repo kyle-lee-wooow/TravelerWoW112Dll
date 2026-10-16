@@ -1310,6 +1310,88 @@ void AppendHealingPets(std::ostringstream& json, const std::vector<HealingPetOwn
     json << ']';
 }
 
+std::vector<uint64_t> g_bossRoster;
+uint64_t g_bossGuid = 0;
+uint32_t g_bossHp = 0, g_bossMaxHp = 0;
+std::string g_bossName, g_bossClassification;
+
+int __cdecl ScanHealingBoss(uint64_t guid, int) {
+    void* object = HealingObjectByGuid(guid);
+    const uintptr_t ptr = reinterpret_cast<uintptr_t>(object);
+    uintptr_t attributes = 0, creature = 0;
+    uint32_t type = 0, classification = 0, flags = 0, hp = 0, maxhp = 0;
+    uint64_t target = 0;
+    if (!object || !ReadHealingMemory(ptr + 0x14, &type, 4) || type != 3
+        || !ReadHealingMemory(ptr + 0x110, &attributes, 4) || !attributes
+        || !ReadHealingMemory(ptr + 0xB30, &creature, 4) || !creature
+        || !ReadHealingMemory(creature + 0x20, &classification, 4)
+        || (classification != 1 && classification != 3)
+        || !ReadHealingMemory(attributes + 0xA0, &flags, 4) || !(flags & 0x80000)
+        || !ReadHealingMemory(attributes + 0x40, &hp, 4) || !hp
+        || !ReadHealingMemory(attributes + 0x58, &maxhp, 4) || maxhp < hp
+        || !ReadHealingMemory(attributes + 0x28, &target, 8)) return 1;
+    bool engaged = std::find(g_bossRoster.begin(), g_bossRoster.end(), target) != g_bossRoster.end();
+    // A boss can temporarily target nobody; accept a fighting roster member targeting it.
+    for (uint64_t member : g_bossRoster) {
+        if (engaged) break;
+        void* unit = HealingObjectByGuid(member);
+        uintptr_t fields = 0;
+        uint64_t memberTarget = 0;
+        uint32_t memberFlags = 0;
+        if (unit && ReadHealingMemory(reinterpret_cast<uintptr_t>(unit) + 0x110, &fields, 4) && fields
+            && ReadHealingMemory(fields + 0x28, &memberTarget, 8) && memberTarget == guid
+            && ReadHealingMemory(fields + 0xA0, &memberFlags, 4) && (memberFlags & 0x80000)) engaged = true;
+    }
+    if (!engaged) return 1;
+    // Elite fallback is deliberately disabled until a server-specific list/threshold exists.
+    if (classification != 3) return 1;
+    if (g_bossGuid && hp >= g_bossHp) return 1;
+    uintptr_t namePtr = 0;
+    std::string name;
+    if (ReadHealingMemory(creature, &namePtr, 4) && namePtr) {
+        for (size_t i = 0; i < 255; ++i) {
+            char ch = 0;
+            if (!ReadHealingMemory(namePtr + i, &ch, 1)) { name.clear(); break; }
+            if (!ch) break;
+            name += ch;
+        }
+    }
+    g_bossGuid = guid; g_bossHp = hp; g_bossMaxHp = maxhp;
+    g_bossName = name; g_bossClassification = "worldboss";
+    return 1;
+}
+
+void AppendHealingBoss(std::ostringstream& json, const std::vector<HealingPetOwner>& owners) {
+    g_bossRoster.clear();
+    for (const auto& owner : owners) {
+        g_bossRoster.push_back(owner.guid);
+        const uint64_t pet = HealingUnitGuid(owner.token.c_str());
+        if (pet) g_bossRoster.push_back(pet);
+    }
+    g_bossGuid = 0;
+    EnumerateVisibleObjects(reinterpret_cast<void*>(ScanHealingBoss), 0);
+    json << ",\"boss\":";
+    if (!g_bossGuid) { json << "null"; return; }
+    json << "{\"guid\":\"" << g_bossGuid << "\",\"name\":" << HealingJsonString(g_bossName)
+        << ",\"classification\":" << HealingJsonString(g_bossClassification)
+        << ",\"hp\":" << g_bossHp << ",\"max_hp\":" << g_bossMaxHp << ",\"in_combat\":true}";
+}
+
+bool ReadHealingFollowing(bool& following) {
+    // FollowUnit -> 0x60FED0(action=3) -> 0x611130 sets action/target.
+    // 0x60FB60 stops follow and clears target; idle action is 12.
+    const unsigned char expected[] = {0x89, 0x15, 0x88, 0xD8, 0xC4, 0x00};
+    unsigned char actual[sizeof(expected)]{};
+    uint32_t action = 0;
+    uint64_t target = 0;
+    if (!ReadHealingMemory(0x611178, actual, sizeof(actual))
+        || memcmp(actual, expected, sizeof(expected)) != 0
+        || !ReadHealingMemory(0xC4D888, &action, sizeof(action))
+        || !ReadHealingMemory(0xC4D980, &target, sizeof(target))) return false;
+    following = action == 3 && target != 0;
+    return true;
+}
+
 std::string ReadHealingState() {
     void* player = GetLocalPlayer();
     HealingAttributes own;
@@ -1395,6 +1477,9 @@ std::string ReadHealingState() {
     if (ReadHealingStandState(player, standState))
         json << ",\"sitting\":" << ((standState == 1 || (standState >= 4 && standState <= 6)) ? "true" : "false");
     AppendHealingCastState(json, player);
+    bool following = false;
+    if (ReadHealingFollowing(following))
+        json << ",\"following\":" << (following ? "true" : "false");
     json << "},\"raid\":[";
     bool first = true;
     const uint32_t members = count ? count : 4;
@@ -1445,6 +1530,7 @@ std::string ReadHealingState() {
     }
     json << "],\"roster_verified\":" << (rosterVerified ? "true" : "false");
     AppendHealingPets(json, petOwners, ownPosition, positionValid, now);
+    AppendHealingBoss(json, petOwners);
     if (combatValid) json << ",\"in_combat\":" << ((unitFlags & 0x80000) ? "true" : "false");
     uint32_t spellsCount = 0;
     if (ReadHealingSpellCount(spellsCount)) json << ",\"spells_count\":" << spellsCount;
@@ -1465,13 +1551,13 @@ int ExecuteNativeStopFollow() {
         if (memcmp(reinterpret_cast<const void*>(address), expected, sizeof(expected)) != 0) return 2;
         void* controller = *reinterpret_cast<void**>(0x00BE1148);
         if (!controller || !GetLocalPlayer()) return 4;
-        // MoveBackward action 0x513EB0: mask 0x20, release flag 0.
-        // Its matching release uses the same mask with flag 1.
+        // TurnLeftStart 0x513EE0: mask 0x100, pressed=1.
+        // TurnLeftStop 0x513F10: same mask, pressed=0. Always release last.
         const uint32_t timestamp = *reinterpret_cast<const uint32_t*>(0x00CF0BC8);
         typedef void(__thiscall* MovementAction)(void*, uint32_t, int, uint32_t, int);
         MovementAction action = reinterpret_cast<MovementAction>(address);
-        action(controller, 0x20, 0, timestamp, 0);
-        action(controller, 0x20, 1, timestamp, 0);
+        action(controller, 0x100, 1, timestamp, 0);
+        action(controller, 0x100, 0, timestamp, 0);
         return 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 3; }

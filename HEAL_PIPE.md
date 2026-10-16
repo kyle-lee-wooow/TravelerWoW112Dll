@@ -1,5 +1,33 @@
 # External healing pipe
 
+Failure reasons additionally map localized client constants to `more_powerful`,
+`not_in_view`, and `not_ready`; existing `out_of_range`, `not_enough_mana`,
+`interrupted`, `invalid_target`, `must_stand` remain. Unmapped UI errors and
+SPELLCAST_FAILED wait 350ms for a specific error before publishing unknown.
+A later STOP cannot convert a pending failure into success. Successful results
+have an empty reason. This is event correlation, not server error-code telemetry;
+validate the localized constants in the actual game. Restart/reinject to update
+the observer (its Lua frame persists in the current client runtime).
+
+## Boss recognition
+
+healstate always emits `boss`: null, or guid/name/classification/hp/max_hp/in_combat.
+Scans visible creature objects independently of the player's selected target.
+Initial policy accepts worldboss rank 3, alive and in combat, linked by target GUID
+to a roster member/pet (or a fighting roster member targeting the boss).
+Multiple matches choose lowest absolute current HP. Creature rank is cache+0x20,
+as traced from UnitClassification 0x516D90 / 0x605620; unit target is attributes+0x28.
+Elite name-list/high-HP heuristics are not enabled: no authoritative list/threshold
+was specified. Target linkage is evidence of engagement, not a full threat table;
+roster member target checks can be conservative/inexact during multi-raid encounters.
+Requires live validation: trash, pull, death/evade, world bosses and target changes.
+
+`player.following` reports actual client follow state: action at 0xC4D888 is 3
+and target GUID at 0xC4D980 is nonzero. It does not infer from movement or sent
+commands. A signature/read failure omits the field rather than reporting false.
+Live-test idle, follow while stationary/moving, manual movement break, stopfollow,
+and target disappearance. Static tracing is verified; runtime testing is pending.
+
 ## Nearby corpse loot
 
 `lootnear` attempts one nearest lootable dead creature within 4.5 yards.
@@ -221,8 +249,8 @@ and compare returned values with the game before enabling automated decisions.
 ## Stop following
 
 Request `stopfollow`, response `ok` / `error: ...`; Python: `stopfollow(pid)`.
-Uses the native movement controller at `0x515090` to press and immediately
-release backward (mask `0x20`) on the game main thread. No Lua or foreground
+Uses the native movement controller at `0x515090` to press (1) and immediately
+release (0) left turn (mask `0x100`) on the game main thread. No Lua or foreground
 keyboard input is used. Caller chooses a safe time; this can interrupt casting.
 `ok` confirms dispatch; follow termination has been live verified.
 Test: `python heal_pipe_client.py PID stopfollow`, then move the followed character.

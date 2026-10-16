@@ -14,6 +14,7 @@ class ObserverTests(unittest.TestCase):
         self.lua.execute('''
             clock=100
             function GetTime() return clock end
+            function getglobal(key) return _G[key] end
             function CreateFrame()
                 return {SetScript=function(self,k,v) self[k]=v end,
                         RegisterEvent=function() end}
@@ -21,6 +22,9 @@ class ObserverTests(unittest.TestCase):
             SPELL_FAILED_OUT_OF_RANGE='range'
             SPELL_FAILED_NO_POWER='mana'
             SPELL_FAILED_NOT_STANDING='stand'
+            SPELL_FAILED_AURA_BOUNCED='stronger'
+            SPELL_FAILED_LINE_OF_SIGHT='wall'
+            SPELL_FAILED_NOT_READY='cooldown'
         ''')
         source = (Path(__file__).parent / 'TravelerWoW112Dll' / 'healing_observer.h').read_text(encoding='utf-8')
         self.lua.execute(source.split('R"lua(', 1)[1].split(')lua"', 1)[0])
@@ -95,6 +99,37 @@ class ObserverTests(unittest.TestCase):
         self.g.Traveler112BeginCast('治疗术')
         self.g.Traveler112RejectCast('invalid_target')
         self.assertEqual(self.result()[3], 'invalid_target')
+
+    def test_new_failure_reasons_and_success_clears(self):
+        for text, code in [('stronger','more_powerful'), ('wall','not_in_view'), ('cooldown','not_ready')]:
+            self.g.Traveler112BeginCast('恢复(等级 10)')
+            self.event('SPELLCAST_FAILED')
+            self.event('UI_ERROR_MESSAGE', text)
+            self.assertEqual(self.result()[2:4], ['0',code])
+        self.g.Traveler112BeginCast('恢复(等级 10)')
+        self.event('SPELLCAST_STOP')
+        self.tick(.11)
+        self.assertEqual(self.result()[2:4], ['1',''])
+
+    def test_unknown_waits_for_later_specific_error(self):
+        self.g.Traveler112BeginCast('治疗术')
+        self.event('UI_ERROR_MESSAGE', 'unmapped')
+        self.event('SPELLCAST_FAILED')
+        self.event('SPELLCAST_STOP')
+        self.tick(.2)
+        self.assertEqual(self.g.Traveler112CastResult, '')
+        self.event('UI_ERROR_MESSAGE', 'wall')
+        self.assertEqual(self.result()[2:4], ['0','not_in_view'])
+
+    def test_unknown_fallback_and_missing_constants(self):
+        self.g.Traveler112BeginCast('治疗术')
+        self.event('SPELLCAST_FAILED')
+        self.tick(.36)
+        self.assertEqual(self.result()[2:4], ['0','unknown'])
+        self.g.Traveler112BeginCast('治疗术')
+        self.event('UI_ERROR_MESSAGE', None)
+        self.tick(.36)
+        self.assertEqual(self.result()[3], 'unknown')
 
 
 if __name__ == '__main__':

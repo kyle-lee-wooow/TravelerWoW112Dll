@@ -57,7 +57,7 @@ def jump(pid: int) -> str:
 
 
 def stopfollow(pid: int) -> str:
-    """Tap native backward movement on the target client's main thread."""
+    """Tap native left turn on the target client's main thread."""
     return command(pid, "stopfollow")
 
 
