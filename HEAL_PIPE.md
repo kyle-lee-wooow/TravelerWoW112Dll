@@ -282,6 +282,16 @@ Do not issue overlapping commands to the same PID; poll every 100-200 ms initial
 and compare returned values with the game before enabling automated decisions.
 # Jump command (chapter 11)
 
+## 2026-10-24 state extensions
+
+Chat is available separately through `chat start` and `chat poll <sequence>`.
+See [CHAT_PIPE.md](CHAT_PIPE.md) for events, cursors, limits and Python examples.
+
+See [STATE_UPDATE_20261024.md](STATE_UPDATE_20261024.md) for nullable
+`los_estimated`, unit control flags, player movement/loot state, Boss target/cast
+IDs, and `cooldown <spell_id>`. LoS is a scene collision estimate, not guaranteed
+spell eligibility. Existing `cast` execution is unchanged.
+
 ## Stop following
 
 Request `stopfollow`, response `ok` / `error: ...`; Python: `stopfollow(pid)`.

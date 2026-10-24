@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include "healing_observer.h"
 #include "loot_observer.h"
+#include "chat_observer.h"
 
 // 定义获取玩家GUID的函数指针类型
 typedef unsigned long long(__cdecl* GetPlayerGuidFunc)();
@@ -858,6 +859,78 @@ bool ReadHealingPosition(void* object, Vector3& position) {
         && std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z);
 }
 
+// Native scene collision, NOT the server's spell eligibility check. Main thread only.
+// Local executable: ECX=two XYZ points, EDX=distance*, stack=plane*, mask; ret 8.
+int EstimateHealingLos(const Vector3& start, const Vector3& end) {
+    static bool faulted = false;
+    if (faulted) return -1;
+    const unsigned char expected[] = {0x55,0x8B,0xEC,0x51,0x53,0x56,0x8B,0xF1};
+    unsigned char actual[sizeof(expected)]{};
+    if (!ReadHealingMemory(0x6AA160, actual, sizeof(actual))
+        || memcmp(actual, expected, sizeof(expected))) return -1;
+    float distance = Distance3D(start, end);
+    if (!std::isfinite(distance)) return -1;
+    if (distance < 0.01f) return 1;
+    Vector3 points[2] = {start, end};
+    points[0].z += 2.0f;
+    points[1].z += 2.0f;
+    float plane[4]{};
+    __try {
+        typedef unsigned char(__fastcall* Intersect)(Vector3*, float*, float*, uint32_t);
+        return reinterpret_cast<Intersect>(0x6AA160)(points, &distance, plane, 0x100111) ? 0 : 1;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { faulted = true; return -1; }
+}
+
+void AppendHealingLos(std::ostringstream& json, const Vector3& start, const Vector3& end, bool valid) {
+    const int result = valid ? EstimateHealingLos(start, end) : -1;
+    json << ",\"los_estimated\":" << (result < 0 ? "null" : result ? "true" : "false");
+}
+
+void AppendHealingUnitControl(std::ostringstream& json, void* object) {
+    uintptr_t fields = 0;
+    uint32_t flags = 0;
+    const bool valid = object && ReadHealingMemory(reinterpret_cast<uintptr_t>(object) + 0x110, &fields, 4)
+        && fields && ReadHealingMemory(fields + 0xA0, &flags, 4);
+    const auto field = [&](const char* name, uint32_t mask) {
+        json << ",\"" << name << "\":" << (!valid ? "null" : (flags & mask) ? "true" : "false");
+    };
+    field("in_combat", 0x80000);
+    field("silenced", 0x2000);
+    field("stunned", 0x40000);
+    field("fleeing", 0x800000);
+    field("confused", 0x400000);
+    field("movement_disabled", 0x4);
+    field("crowd_controlled", 0xC40000);
+}
+
+void AppendHealingMovement(std::ostringstream& json, void* player) {
+    uint32_t flags = 0, map = 0, action = 0;
+    uintptr_t manager = 0;
+    json << ",\"movement_flags\":";
+    if (ReadHealingMemory(reinterpret_cast<uintptr_t>(player) + offset_UnitMovementState, &flags, 4)) json << flags;
+    else json << "null";
+    json << ",\"map_id\":";
+    if (ReadHealingMemory(address_ObjectManager, &manager, 4) && manager
+        && ReadHealingMemory(manager + 0xCC, &map, 4)) json << map;
+    else json << "null";
+    // Use the same instruction guard as the existing follow-state reader.
+    const unsigned char expected[] = {0x89,0x15,0x88,0xD8,0xC4,0x00};
+    unsigned char actual[sizeof(expected)]{};
+    Vector3 target{};
+    const bool valid = ReadHealingMemory(0x611178, actual, sizeof(actual))
+        && !memcmp(actual, expected, sizeof(expected))
+        && ReadHealingMemory(0xC4D888, &action, 4);
+    json << ",\"ctm_action\":" << (valid ? std::to_string(action) : "null")
+        << ",\"ctm_active\":" << (!valid ? "null" : (action != 0 && action != 12 && action != 13) ? "true" : "false");
+    const bool targetValid = valid && action == 4
+        && ReadHealingMemory(0xC4D890, &target, sizeof(target))
+        && std::isfinite(target.x) && std::isfinite(target.y) && std::isfinite(target.z);
+    json << ",\"ctm_destination\":";
+    if (targetValid) json << "{\"x\":" << target.x << ",\"y\":" << target.y << ",\"z\":" << target.z << '}';
+    else json << "null";
+}
+
 // Traced from UnitAffectingCombat (0x517E10), UnitBuff (0x519500),
 // UnitDebuff (0x5198F0), and GetSpellName (0x4B3FE0) in this client.
 bool HealingSpellText(uint32_t id, std::string& name, std::string* rank = nullptr) {
@@ -1002,6 +1075,19 @@ bool EnsureHealingObserver() {
         && ReadHealingLuaGlobal("Traveler112CastReady", &ready, nullptr, 0) && ready == 1;
 }
 
+bool EnsureChatObserver() {
+    const uint64_t guid = GetPlayerGuid();
+    if (!guid || !HealingRuntimeMatches()) return false;
+    double ready = 0;
+    if (!ReadHealingLuaGlobal("Traveler112ChatReady", &ready, nullptr, 0) || ready != 1) {
+        if (!ExecuteLuaOnMainThread(kChatObserverLua)) return false;
+    }
+    const std::string session = std::to_string(guid);
+    const std::string script = "if Traveler112ChatFrame.session~='" + session
+        + "' then Traveler112ChatFrame.queue={};Traveler112ChatFrame.session='" + session + "' end";
+    return ExecuteLuaOnMainThread(script.c_str());
+}
+
 bool HealingClientTime(uint32_t& time) {
     __try {
         typedef uint32_t(__cdecl* Clock)();
@@ -1032,6 +1118,19 @@ bool ReadHealingGcd(uint32_t now, int& remaining) {
         node = next;
     }
     return true;
+}
+
+bool ReadHealingCooldown(uint32_t id, uint32_t& duration, uint32_t& start, uint32_t& enabled) {
+    const unsigned char expected[] = {0x53,0x8B,0xDC,0x83,0xEC,0x08,0x83,0xE4,0xF8};
+    unsigned char actual[sizeof(expected)]{};
+    if (!ReadHealingMemory(0x6E13E0, actual, sizeof(actual))
+        || memcmp(actual, expected, sizeof(expected))) return false;
+    __try {
+        typedef void(__thiscall* Cooldown)(void*, uint32_t, uint32_t, uint32_t*, uint32_t*, uint32_t*);
+        reinterpret_cast<Cooldown>(0x6E13E0)(reinterpret_cast<void*>(0xCECAEC), id, 0, &duration, &start, &enabled);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 void AppendHealingCastState(std::ostringstream& json, void* player) {
@@ -1305,6 +1404,8 @@ void AppendHealingPets(std::ostringstream& json, const std::vector<HealingPetOwn
             if (auras.buffsValid) json << ",\"buffs\":" << HealingNamesJson(auras.buffs);
             if (auras.debuffsValid) json << ",\"debuffs\":" << HealingNamesJson(auras.debuffs);
         } else g_healingAuraCache.erase(guid);
+        AppendHealingLos(json, ownPosition, position, available);
+        AppendHealingUnitControl(json, available ? object : nullptr);
         json << '}';
     }
     json << ']';
@@ -1404,7 +1505,23 @@ void AppendHealingBoss(std::ostringstream& json, const std::vector<HealingPetOwn
     if (!g_bossGuid) { json << "null"; return; }
     json << "{\"guid\":\"" << g_bossGuid << "\",\"name\":" << HealingJsonString(g_bossName)
         << ",\"classification\":" << HealingJsonString(g_bossClassification)
-        << ",\"hp\":" << g_bossHp << ",\"max_hp\":" << g_bossMaxHp << ",\"in_combat\":true}";
+        << ",\"hp\":" << g_bossHp << ",\"max_hp\":" << g_bossMaxHp << ",\"in_combat\":true";
+    void* object = HealingObjectByGuid(g_bossGuid);
+    uintptr_t fields = 0, descriptor = 0;
+    uint32_t entry = 0, cast = 0, channel = 0;
+    uint64_t target = 0;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(object);
+    const bool fieldsValid = object && ReadHealingMemory(base + 0x110, &fields, 4) && fields;
+    const bool entryValid = object && ReadHealingMemory(base + 8, &descriptor, 4) && descriptor
+        && ReadHealingMemory(descriptor + 0xC, &entry, 4) && entry;
+    const bool targetValid = fieldsValid && ReadHealingMemory(fields + 0x28, &target, 8);
+    const bool castValid = object && ReadHealingMemory(base + 0xC8C, &cast, 4);
+    const bool channelValid = fieldsValid && ReadHealingMemory(fields + 0x228, &channel, 4);
+    json << ",\"npc_id\":" << (entryValid ? std::to_string(entry) : "null")
+        << ",\"target_guid\":" << (targetValid ? HealingJsonString(std::to_string(target)) : "null")
+        << ",\"cast_spell_id\":" << (castValid ? std::to_string(cast) : "null")
+        << ",\"channel_spell_id\":" << (channelValid ? std::to_string(channel) : "null");
+    json << '}';
 }
 
 bool ReadHealingFollowing(bool& following) {
@@ -1498,6 +1615,14 @@ std::string ReadHealingState() {
         << (moving ? "true" : "false");
     json << ",\"x\":" << (positionValid ? std::to_string(ownPosition.x) : "null")
         << ",\"y\":" << (positionValid ? std::to_string(ownPosition.y) : "null");
+    AppendHealingUnitControl(json, player);
+    AppendHealingMovement(json, player);
+    AppendHealingLos(json, ownPosition, ownPosition, positionValid);
+    uint64_t lootGuid = 0;
+    json << ",\"current_loot_guid\":";
+    if (ReadHealingMemory(reinterpret_cast<uintptr_t>(player) + 0x1D28, &lootGuid, 8))
+        json << HealingJsonString(std::to_string(lootGuid));
+    else json << "null";
     if (buffsValid) {
         bool drinking = false;
         for (const auto& name : ownBuffs)
@@ -1557,6 +1682,8 @@ std::string ReadHealingState() {
             << ",\"dead\":" << (available ? (attributes.hp == 0 ? "true" : "false") : "null")
             << ",\"x\":" << (available ? std::to_string(memberPosition.x) : "null")
             << ",\"y\":" << (available ? std::to_string(memberPosition.y) : "null");
+        AppendHealingLos(json, ownPosition, memberPosition, available);
+        AppendHealingUnitControl(json, available ? object : nullptr);
         if (available) {
             const auto& auras = CachedHealingAuras(guid, object, now);
             if (auras.buffsValid) json << ",\"buffs\":" << HealingNamesJson(auras.buffs);
@@ -1564,7 +1691,8 @@ std::string ReadHealingState() {
         }
         json << '}';
     }
-    json << "],\"roster_verified\":" << (rosterVerified ? "true" : "false");
+    json << "],\"roster_verified\":" << (rosterVerified ? "true" : "false")
+        << ",\"los_method\":\"client_collision_ray_z2_mask_0x100111\"";
     AppendHealingPets(json, petOwners, ownPosition, positionValid, now);
     AppendHealingBoss(json, petOwners);
     if (combatValid) json << ",\"in_combat\":" << ((unitFlags & 0x80000) ? "true" : "false");
@@ -1618,6 +1746,21 @@ int ExecuteNativeJump() {
 }
 
 std::string HealingMemoryCommand(const std::string& input) {
+    if (input == "chat start") return EnsureChatObserver() ? "ok" : "error: chat observer unavailable";
+    if (input.compare(0, 10, "chat poll ") == 0) {
+        const std::string cursor = input.substr(10);
+        if (cursor.empty() || cursor.size() > 16 || cursor.find_first_not_of("0123456789") != std::string::npos)
+            return "error: use chat poll <nonnegative sequence>";
+        const uint64_t after = std::stoull(cursor);
+        if (after > 9007199254740991ULL) return "error: sequence exceeds Lua integer precision";
+        if (!EnsureChatObserver()) return "error: chat observer unavailable";
+        const std::string script = "Traveler112ChatPoll(" + std::to_string(after) + ")";
+        if (!ExecuteLuaOnMainThread(script.c_str())) return "error: chat poll failed";
+        char result[50000]{};
+        if (!ReadHealingLuaGlobal("Traveler112ChatResult", nullptr, result, sizeof(result)))
+            return "error: chat result unavailable";
+        return result;
+    }
     if (input.compare(0, 8, "testpos ") == 0) {
 #if defined(TRAVELER_TEST_POSITION_WRITE)
         std::istringstream args(input.substr(8));
@@ -1685,6 +1828,23 @@ std::string HealingMemoryCommand(const std::string& input) {
         return ExecuteLuaOnMainThread(input.substr(9).c_str()) ? "ok" : "error: lua failed";
     }
     if (input == "healstate") return ReadHealingState();
+    if (input.compare(0, 9, "cooldown ") == 0) {
+        std::istringstream args(input.substr(9));
+        uint32_t id = 0, duration = 0, start = 0, enabled = 0, now = 0;
+        std::string extra, name;
+        if (!(args >> id) || (args >> extra) || !HealingSpellText(id, name))
+            return "error: use cooldown <valid spell id>";
+        if (!GetLocalPlayer() || !HealingClientTime(now) || !ReadHealingCooldown(id, duration, start, enabled))
+            return "error: cooldown unavailable";
+        const int32_t delta = static_cast<int32_t>(start + duration - now);
+        const uint32_t remaining = start && duration && delta > 0 ? static_cast<uint32_t>(delta) : 0;
+        std::ostringstream result;
+        result << "{\"spell_id\":" << id << ",\"spell\":" << HealingJsonString(name)
+            << ",\"duration_ms\":" << duration << ",\"remaining_ms\":" << remaining
+            << ",\"enabled\":" << (enabled ? "true" : "false")
+            << ",\"ready\":" << (enabled && !remaining ? "true" : "false") << '}';
+        return result.str();
+    }
     if (input == "spells") {
         HealingAttributes own;
         if (!ReadHealingAttributes(GetLocalPlayer(), own)) return "error: player unavailable";
@@ -1872,7 +2032,12 @@ std::string DispatchHealingLua(const std::string& script) {
 LRESULT CALLBACK ClickToMoveMainThreadHook(int code, WPARAM wParam, LPARAM lParam) {
     if (code >= 0) {
         const CWPSTRUCT* message = reinterpret_cast<const CWPSTRUCT*>(lParam);
-        if (message && message->message == kLootTickMessage) TickNearbyLoot();
+        if (message && message->message == kLootTickMessage) {
+            TickNearbyLoot();
+            static ULONGLONG lastChatCheck = 0;
+            const ULONGLONG now = GetTickCount64();
+            if (now - lastChatCheck >= 1000) { lastChatCheck = now; EnsureChatObserver(); }
+        }
         if (message != nullptr && message->message == kClickToMoveMessage) {
             ClickToMoveType type = ClickToMoveType::Stop;
             Vector3 position{};
@@ -2198,7 +2363,12 @@ std::string HandleRouteCommand(const std::string& input) {
         if (!routeName.empty()) return "error: use jump without arguments";
         return DispatchHealingMemory("jump");
     }
-    if (command == "healstate" || command == "spells" || command == "calibrate" || command == "calibrate_class") {
+    if (command == "chat") {
+        if (input != "chat start" && input.compare(0, 10, "chat poll ") != 0)
+            return "error: use chat start or chat poll <sequence>";
+        return DispatchHealingMemory(input);
+    }
+    if (command == "healstate" || command == "spells" || command == "cooldown" || command == "calibrate" || command == "calibrate_class") {
         return DispatchHealingMemory(input);
     }
     if (command == "stopcast") {

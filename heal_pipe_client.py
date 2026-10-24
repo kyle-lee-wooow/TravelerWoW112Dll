@@ -34,6 +34,20 @@ def healstate(pid: int) -> dict:
     return json.loads(command(pid, "healstate"))
 
 
+def chat_poll(pid: int, after_seq: int = 0) -> dict:
+    """Non-destructive bounded chat read; use returned next_seq for the next poll."""
+    if type(after_seq) is not int or not 0 <= after_seq <= 9007199254740991:
+        raise ValueError("after_seq must be an exact nonnegative Lua integer")
+    return json.loads(command(pid, f"chat poll {after_seq}"))
+
+
+def cooldown(pid: int, spell_id: int) -> dict:
+    """Client cooldown only; ready does not imply mana/range/LoS eligibility."""
+    if isinstance(spell_id, bool) or not isinstance(spell_id, int) or spell_id <= 0:
+        raise ValueError("spell_id must be a positive integer")
+    return json.loads(command(pid, f"cooldown {spell_id}"))
+
+
 def spells(pid: int) -> list[str]:
     result = json.loads(command(pid, "spells"))
     names = result.get("spells")
@@ -94,4 +108,4 @@ if __name__ == "__main__":
     text = " ".join(sys.argv[2:]) or "healstate"
     result = command(pid, text)
     print(json.dumps(json.loads(result), ensure_ascii=False, indent=2)
-          if text in ("healstate", "spells") else result)
+          if text in ("healstate", "spells") or text.startswith("chat poll ") else result)
