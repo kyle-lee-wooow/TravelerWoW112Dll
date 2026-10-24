@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup><ExperimentalPositionWrite Condition="'$(ExperimentalPositionWrite)'==''">false</ExperimentalPositionWrite></PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(ExperimentalPositionWrite)'=='true'">
+    <ClCompile><PreprocessorDefinitions>TRAVELER_TEST_POSITION_WRITE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+</Project>

@@ -1618,6 +1618,25 @@ int ExecuteNativeJump() {
 }
 
 std::string HealingMemoryCommand(const std::string& input) {
+    if (input.compare(0, 8, "testpos ") == 0) {
+#if defined(TRAVELER_TEST_POSITION_WRITE)
+        std::istringstream args(input.substr(8));
+        std::string confirm, extra;
+        float x = 0, y = 0;
+        if (!(args >> confirm >> x >> y) || confirm != "confirm" || (args >> extra)
+            || !std::isfinite(x) || !std::isfinite(y)) return "error: use testpos confirm <x> <y>";
+        if (g_playing.load() || g_fishing.load()) return "error: stop playback and fishing first";
+        void* player = GetLocalPlayer();
+        if (!player) return "error: player unavailable";
+        const float xy[2] = {x, y};
+        SIZE_T written = 0;
+        const BOOL ok = WriteProcessMemory(GetCurrentProcess(),
+            reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(player) + 0x9B8), xy, sizeof(xy), &written);
+        return ok && written == sizeof(xy) ? "ok" : "error: XY write failed";
+#else
+        return "error: test position write disabled in this build";
+#endif
+    }
     if (input == "stopmove") {
         g_playing.store(false);
         Vector3 current{};
@@ -2152,6 +2171,7 @@ std::string HandleRouteCommand(const std::string& input) {
     std::string command;
     std::string routeName;
     parser >> command >> routeName;
+    if (command == "testpos") return DispatchHealingMemory(input);
     if (command == "moveto") {
         // Preserve arguments; parse and read current Z on the game main thread.
         const size_t start = input.find_first_of(" \t");
