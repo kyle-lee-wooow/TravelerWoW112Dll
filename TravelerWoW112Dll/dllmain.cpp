@@ -1496,6 +1496,8 @@ std::string ReadHealingState() {
         << "\",\"spirit\":" << own.spirit << ",\"intellect\":" << own.intellect
         << ",\"plus_healing\":0,\"plus_healing_verified\":false,\"moving\":"
         << (moving ? "true" : "false");
+    json << ",\"x\":" << (positionValid ? std::to_string(ownPosition.x) : "null")
+        << ",\"y\":" << (positionValid ? std::to_string(ownPosition.y) : "null");
     if (buffsValid) {
         bool drinking = false;
         for (const auto& name : ownBuffs)
@@ -1552,7 +1554,9 @@ std::string ReadHealingState() {
             << ",\"max_mana\":" << (available ? std::to_string(attributes.powerType == 0 ? attributes.maxmana : 0) : "null")
             << ",\"class\":\"" << (available ? HealingClass(attributes.classId) : "UNKNOWN")
             << "\",\"distance\":" << (available ? std::to_string(Distance3D(ownPosition, memberPosition)) : "null")
-            << ",\"dead\":" << (available ? (attributes.hp == 0 ? "true" : "false") : "null");
+            << ",\"dead\":" << (available ? (attributes.hp == 0 ? "true" : "false") : "null")
+            << ",\"x\":" << (available ? std::to_string(memberPosition.x) : "null")
+            << ",\"y\":" << (available ? std::to_string(memberPosition.y) : "null");
         if (available) {
             const auto& auras = CachedHealingAuras(guid, object, now);
             if (auras.buffsValid) json << ",\"buffs\":" << HealingNamesJson(auras.buffs);
@@ -1614,6 +1618,28 @@ int ExecuteNativeJump() {
 }
 
 std::string HealingMemoryCommand(const std::string& input) {
+    if (input == "stopmove") {
+        g_playing.store(false);
+        Vector3 current{};
+        if (!ReadHealingPosition(GetLocalPlayer(), current)) return "error: player position unavailable";
+        return ExecuteClickToMoveOnMainThread(ClickToMoveType::Stop, current)
+            ? "ok" : "error: stopmove failed";
+    }
+    if (input.compare(0, 7, "moveto ") == 0) {
+        if (g_playing.load()) return "error: route playback active; stopmove first";
+        std::istringstream args(input.substr(7));
+        float x = 0, y = 0;
+        std::string extra;
+        if (!(args >> x >> y) || (args >> extra) || !std::isfinite(x) || !std::isfinite(y))
+            return "error: use moveto <finite x> <finite y>";
+        Vector3 destination{};
+        if (!ReadHealingPosition(GetLocalPlayer(), destination)) return "error: player position unavailable";
+        destination.x = x;
+        destination.y = y;
+        // One-shot CTM: no maintenance loop may reassert after manual input.
+        return ExecuteClickToMoveOnMainThread(ClickToMoveType::Move, destination)
+            ? "ok" : "error: moveto failed";
+    }
     if (input == "lootnear stop") { StopNearbyLoot("stopped"); return "ok"; }
     if (input == "lootnear status") return "{\"running\":" + std::string(g_lootAll.load() || g_lootPending ? "true" : "false")
         + ",\"attempted\":" + std::to_string(g_lootAttempted.size()) + ",\"reason\":" + HealingJsonString(g_lootStatus) + "}";
@@ -2126,6 +2152,16 @@ std::string HandleRouteCommand(const std::string& input) {
     std::string command;
     std::string routeName;
     parser >> command >> routeName;
+    if (command == "moveto") {
+        // Preserve arguments; parse and read current Z on the game main thread.
+        const size_t start = input.find_first_of(" \t");
+        if (start == std::string::npos) return "error: use moveto <x> <y>";
+        return DispatchHealingMemory("moveto " + input.substr(start + 1));
+    }
+    if (command == "stopmove") {
+        if (!routeName.empty()) return "error: use stopmove without arguments";
+        return DispatchHealingMemory("stopmove");
+    }
     if (command == "lootnear") {
         if (!routeName.empty() && routeName != "all" && routeName != "stop" && routeName != "status")
             return "error: use lootnear [all|stop|status]";

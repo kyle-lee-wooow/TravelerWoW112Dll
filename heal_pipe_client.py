@@ -3,6 +3,7 @@ import ctypes
 from ctypes import wintypes
 import json
 import sys
+import math
 
 _call = ctypes.WinDLL("kernel32", use_last_error=True).CallNamedPipeW
 _call.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD,
@@ -49,6 +50,17 @@ def cast(pid: int, spell: str, target_name: str) -> str:
 
 def stopcast(pid: int) -> str:
     return command(pid, "stopcast")
+
+
+def moveto(pid: int, x: float, y: float) -> str:
+    """One-shot world-coordinate CTM, using the player's current Z."""
+    if not math.isfinite(x) or not math.isfinite(y):
+        raise ValueError("Coordinates must be finite")
+    return command(pid, f"moveto {x:.9g} {y:.9g}")
+
+
+def stopmove(pid: int) -> str:
+    return command(pid, "stopmove")
 
 
 def jump(pid: int) -> str:

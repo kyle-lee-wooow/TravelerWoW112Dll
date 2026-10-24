@@ -1,5 +1,30 @@
 # External healing pipe
 
+## Auto move v3
+
+healstate.player and each raid member include x/y world coordinates from the same
+position read used by distance. Unavailable member coordinates are null.
+`moveto <x> <y>` dispatches one native CTM request using the player's current Z.
+`stopmove` clears route playback and dispatches CTM stop. Both return ok/error.
+moveto rejects active route playback; call stopmove first when switching modes.
+There is no automatic resend, pathfinding, stuck recovery or arrival receipt.
+Manual movement should cancel native CTM; actual interruption and slopes/stairs
+must be validated in-game. ok means native call completed, not arrival.
+
+```cmd
+python heal_pipe_client.py 17552 "moveto -1320.79 1150.03"
+python heal_pipe_client.py 17552 stopmove
+```
+
+```python
+from heal_pipe_client import moveto, stopmove, healstate
+state = healstate(17552)
+print(state['player']['x'], state['player']['y'])
+# Choose a nearby reachable world-coordinate destination, not screen coordinates.
+print(moveto(17552, -1320.79, 1150.03))
+print(stopmove(17552))
+```
+
 TODO 2026-10-16 updates: drinking recognizes Food/进食 and Food & Drink in
 addition to Drink/喝水 (same 1s aura cache); sitting remains native stand-state.
 Boss policy v2 requires 5 seconds of continuously observed combat linkage and
