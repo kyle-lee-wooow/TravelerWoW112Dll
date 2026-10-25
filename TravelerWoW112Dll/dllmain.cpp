@@ -1614,7 +1614,8 @@ std::string ReadHealingState() {
         << ",\"plus_healing\":0,\"plus_healing_verified\":false,\"moving\":"
         << (moving ? "true" : "false");
     json << ",\"x\":" << (positionValid ? std::to_string(ownPosition.x) : "null")
-        << ",\"y\":" << (positionValid ? std::to_string(ownPosition.y) : "null");
+        << ",\"y\":" << (positionValid ? std::to_string(ownPosition.y) : "null")
+        << ",\"z\":" << (positionValid ? std::to_string(ownPosition.z) : "null");
     AppendHealingUnitControl(json, player);
     AppendHealingMovement(json, player);
     AppendHealingLos(json, ownPosition, ownPosition, positionValid);
@@ -1765,17 +1766,22 @@ std::string HealingMemoryCommand(const std::string& input) {
 #if defined(TRAVELER_TEST_POSITION_WRITE)
         std::istringstream args(input.substr(8));
         std::string confirm, extra;
-        float x = 0, y = 0;
-        if (!(args >> confirm >> x >> y) || confirm != "confirm" || (args >> extra)
-            || !std::isfinite(x) || !std::isfinite(y)) return "error: use testpos confirm <x> <y>";
+        float x = 0, y = 0, z = 0;
+        if (!(args >> confirm >> x >> y) || confirm != "confirm"
+            || !std::isfinite(x) || !std::isfinite(y)) return "error: use testpos confirm <x> <y> [z]";
+        args >> std::ws;
+        const bool hasZ = !args.eof();
+        if (hasZ && (!(args >> z) || !std::isfinite(z) || (args >> extra)))
+            return "error: use testpos confirm <x> <y> [finite z]";
         if (g_playing.load() || g_fishing.load()) return "error: stop playback and fishing first";
         void* player = GetLocalPlayer();
         if (!player) return "error: player unavailable";
-        const float xy[2] = {x, y};
+        const float xyz[3] = {x, y, z};
+        const SIZE_T bytes = hasZ ? sizeof(xyz) : 2 * sizeof(float);
         SIZE_T written = 0;
         const BOOL ok = WriteProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(player) + 0x9B8), xy, sizeof(xy), &written);
-        return ok && written == sizeof(xy) ? "ok" : "error: XY write failed";
+            reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(player) + offset_UnitPositionX), xyz, bytes, &written);
+        return ok && written == bytes ? "ok" : "error: position write failed";
 #else
         return "error: test position write disabled in this build";
 #endif

@@ -515,7 +515,7 @@ enum RouteControlId {
     IDC_SPEED_READ,
     IDC_OUTPUT,
     IDC_EXIT,
-    IDC_TESTPOS_ENABLE, IDC_TESTPOS_X, IDC_TESTPOS_Y, IDC_TESTPOS_APPLY,
+    IDC_TESTPOS_ENABLE, IDC_TESTPOS_X, IDC_TESTPOS_Y, IDC_TESTPOS_Z, IDC_TESTPOS_APPLY,
 };
 
 constexpr UINT WM_APP_COMMAND_RESULT = WM_APP + 201;
@@ -735,7 +735,7 @@ void SetTaskPage(HWND window, int page) {
         ShowWindow(GetDlgItem(window, id), page == 2 ? SW_SHOW : SW_HIDE);
     }
 #if defined(TRAVELER_TEST_POSITION_WRITE)
-    for (int id : {IDC_TESTPOS_ENABLE, IDC_TESTPOS_X, IDC_TESTPOS_Y, IDC_TESTPOS_APPLY})
+    for (int id : {IDC_TESTPOS_ENABLE, IDC_TESTPOS_X, IDC_TESTPOS_Y, IDC_TESTPOS_Z, IDC_TESTPOS_APPLY})
         ShowWindow(GetDlgItem(window, id), page == 2 ? SW_SHOW : SW_HIDE);
 #endif
 }
@@ -775,16 +775,19 @@ LRESULT CALLBACK RouteControlWindowProc(HWND window, UINT message, WPARAM wParam
         tabItem.pszText = const_cast<LPWSTR>(L"移动工具");
         TabCtrl_InsertItem(taskTab, 2, &tabItem);
 #if defined(TRAVELER_TEST_POSITION_WRITE)
-        SetControlFont(CreateWindowExW(0, L"BUTTON", L"启用 XY 写入测试（当前角色）", WS_CHILD | BS_AUTOCHECKBOX,
+        SetControlFont(CreateWindowExW(0, L"BUTTON", L"启用 XYZ 写入测试（当前角色）", WS_CHILD | BS_AUTOCHECKBOX,
             32, 178, 330, 20, window, reinterpret_cast<HMENU>(IDC_TESTPOS_ENABLE), nullptr, nullptr));
         SetControlFont(CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL,
-            32, 205, 100, 25, window, reinterpret_cast<HMENU>(IDC_TESTPOS_X), nullptr, nullptr));
+            32, 205, 76, 25, window, reinterpret_cast<HMENU>(IDC_TESTPOS_X), nullptr, nullptr));
         SetControlFont(CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL,
-            142, 205, 100, 25, window, reinterpret_cast<HMENU>(IDC_TESTPOS_Y), nullptr, nullptr));
+            114, 205, 76, 25, window, reinterpret_cast<HMENU>(IDC_TESTPOS_Y), nullptr, nullptr));
+        SetControlFont(CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL,
+            196, 205, 76, 25, window, reinterpret_cast<HMENU>(IDC_TESTPOS_Z), nullptr, nullptr));
         SendDlgItemMessageW(window, IDC_TESTPOS_X, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"X"));
         SendDlgItemMessageW(window, IDC_TESTPOS_Y, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Y"));
-        SetControlFont(CreateWindowExW(0, L"BUTTON", L"确认写入 XY", WS_CHILD,
-            252, 205, 120, 25, window, reinterpret_cast<HMENU>(IDC_TESTPOS_APPLY), nullptr, nullptr));
+        SendDlgItemMessageW(window, IDC_TESTPOS_Z, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Z"));
+        SetControlFont(CreateWindowExW(0, L"BUTTON", L"确认写入 XYZ", WS_CHILD,
+            278, 205, 116, 25, window, reinterpret_cast<HMENU>(IDC_TESTPOS_APPLY), nullptr, nullptr));
 #endif
 
         SetControlFont(CreateWindowExW(0, L"STATIC", L"路线名称：", WS_CHILD | WS_VISIBLE,
@@ -974,12 +977,17 @@ LRESULT CALLBACK RouteControlWindowProc(HWND window, UINT message, WPARAM wParam
                 MessageBoxW(window, L"请启用测试开关并选择仅当前角色。", L"XY 测试", MB_OK);
                 return 0;
             }
-            char x[64]{}, y[64]{};
+            char x[64]{}, y[64]{}, z[64]{};
             GetDlgItemTextA(window, IDC_TESTPOS_X, x, sizeof(x));
             GetDlgItemTextA(window, IDC_TESTPOS_Y, y, sizeof(y));
-            const std::wstring prompt = Utf8ToWide(std::string("当前选中角色 X=") + x + " Y=" + y + "，Z 不变。确认写入？");
-            if (MessageBoxW(window, prompt.c_str(), L"XY 测试", MB_YESNO | MB_DEFBUTTON2) == IDYES)
-                SendRouteUiCommand(window, std::string("testpos confirm ") + x + " " + y);
+            GetDlgItemTextA(window, IDC_TESTPOS_Z, z, sizeof(z));
+            if (!x[0] || !y[0] || !z[0]) {
+                MessageBoxW(window, L"请完整填写 X、Y、Z 坐标。", L"XYZ 测试", MB_OK);
+                return 0;
+            }
+            const std::wstring prompt = Utf8ToWide(std::string("当前选中角色 X=") + x + " Y=" + y + " Z=" + z + "。确认写入？");
+            if (MessageBoxW(window, prompt.c_str(), L"XYZ 测试", MB_YESNO | MB_DEFBUTTON2) == IDYES)
+                SendRouteUiCommand(window, std::string("testpos confirm ") + x + " " + y + " " + z);
             return 0;
         }
 #endif
