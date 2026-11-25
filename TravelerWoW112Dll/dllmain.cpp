@@ -1361,6 +1361,78 @@ uint64_t HealingUnitGuid(const char* token) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
+std::string QuoteHealingLua(const std::string& value);
+
+struct HealingTargetSnapshot {
+    uint64_t guid{};
+    std::string name;
+    float distance{};
+    bool distanceValid{}, healthValid{}, castValid{};
+    uint32_t hp{}, maxhp{}, cast{};
+};
+
+HealingTargetSnapshot ReadHealingTarget() {
+    HealingTargetSnapshot result;
+    result.guid = HealingUnitGuid("target");
+    void* object = HealingObjectByGuid(result.guid);
+    if (!object) { result.guid = 0; return result; }
+    result.name = HealingObjectName(result.guid);
+    Vector3 own{}, target{};
+    result.distanceValid = ReadHealingPosition(GetLocalPlayer(), own)
+        && ReadHealingPosition(object, target);
+    if (result.distanceValid) result.distance = Distance3D(own, target);
+    uintptr_t attributes = 0;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(object);
+    result.healthValid = ReadHealingMemory(base + 0x110, &attributes, 4) && attributes
+        && ReadHealingMemory(attributes + 0x40, &result.hp, 4)
+        && ReadHealingMemory(attributes + 0x58, &result.maxhp, 4)
+        && result.maxhp > 0 && result.hp <= result.maxhp;
+    result.castValid = ReadHealingMemory(base + 0xC8C, &result.cast, 4);
+    if (HealingUnitGuid("target") != result.guid) return HealingTargetSnapshot{};
+    return result;
+}
+
+void AppendHealingTarget(std::ostringstream& json) {
+    const auto target = ReadHealingTarget();
+    json << ",\"target\":";
+    if (!target.guid) { json << "null"; return; }
+    json << "{\"guid\":\"" << target.guid << "\",\"name\":" << HealingJsonString(target.name)
+        << ",\"distance\":";
+    if (target.distanceValid) json << std::round(target.distance * 10.0f) / 10.0f;
+    else json << "null";
+    json << ",\"hp\":" << (target.healthValid ? std::to_string(target.hp) : "null")
+        << ",\"max_hp\":" << (target.healthValid ? std::to_string(target.maxhp) : "null")
+        << ",\"cast_spell_id\":" << (target.castValid ? std::to_string(target.cast) : "null") << '}';
+}
+
+void TickHealingTargetDisplay() {
+    static ULONGLONG last = 0;
+    static std::string previous;
+    const auto now = GetTickCount64();
+    if (last && now - last < 500) return;
+    last = now;
+    const auto target = ReadHealingTarget();
+    std::ostringstream label;
+    if (target.guid && target.distanceValid) {
+        label.setf(std::ios::fixed); label.precision(1);
+        label << "\xE7\x9B\xAE\xE6\xA0\x87\xEF\xBC\x9A" << target.name << ' ' << target.distance << "\xE7\xA0\x81";
+    }
+    const std::string key = std::to_string(target.guid) + ":" + label.str();
+    if (key == previous) return;
+    const std::string script =
+        "if not Traveler112DistanceFrame then local f=CreateFrame('Frame',nil,UIParent); "
+        "Traveler112DistanceFrame=f; f:SetWidth(320); f:SetHeight(24); "
+        "f:SetPoint('TOPLEFT',TargetFrame,'BOTTOMLEFT',0,-4); f:SetFrameStrata('HIGH'); "
+        "f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag('LeftButton'); "
+        "f:SetScript('OnDragStart',function() this:StartMoving() end); "
+        "f:SetScript('OnDragStop',function() this:StopMovingOrSizing() end); "
+        "f.text=f:CreateFontString(nil,'OVERLAY','GameFontNormal'); f.text:SetAllPoints(f); end; "
+        "local f=Traveler112DistanceFrame; f.text:SetText(" + QuoteHealingLua(label.str()) + "); "
+        + (label.str().empty() ? "f:Hide()" :
+            (target.distance <= 40.0f ? "f.text:SetTextColor(0,1,0); f:Show()" : "f.text:SetTextColor(1,0,0); f:Show()"));
+    if (ExecuteLuaOnMainThread(script.c_str())) previous = key;
+}
+
 struct HealingPetOwner { uint64_t guid; std::string name, token; };
 
 void AppendHealingPets(std::ostringstream& json, const std::vector<HealingPetOwner>& owners,
@@ -1694,6 +1766,7 @@ std::string ReadHealingState() {
     }
     json << "],\"roster_verified\":" << (rosterVerified ? "true" : "false")
         << ",\"los_method\":\"client_collision_ray_z2_mask_0x100111\"";
+    AppendHealingTarget(json);
     AppendHealingPets(json, petOwners, ownPosition, positionValid, now);
     AppendHealingBoss(json, petOwners);
     if (combatValid) json << ",\"in_combat\":" << ((unitFlags & 0x80000) ? "true" : "false");
@@ -2040,6 +2113,7 @@ LRESULT CALLBACK ClickToMoveMainThreadHook(int code, WPARAM wParam, LPARAM lPara
         const CWPSTRUCT* message = reinterpret_cast<const CWPSTRUCT*>(lParam);
         if (message && message->message == kLootTickMessage) {
             TickNearbyLoot();
+            TickHealingTargetDisplay();
             static ULONGLONG lastChatCheck = 0;
             const ULONGLONG now = GetTickCount64();
             if (now - lastChatCheck >= 1000) { lastChatCheck = now; EnsureChatObserver(); }
