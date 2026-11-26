@@ -402,6 +402,9 @@ bool ExecuteClickToMoveOnMainThread(ClickToMoveType type, const Vector3& destina
     }
 }
 
+std::mutex g_groundSpeedMutex;
+float g_requestedGroundSpeed = 0.0f; // Zero disables maintenance.
+
 bool ReadGroundSpeed(float& speed) {
     __try {
         auto* player = reinterpret_cast<uint8_t*>(GetLocalPlayer());
@@ -431,6 +434,15 @@ bool WriteGroundSpeed(float speed) {
         return false;
     }
     return true;
+}
+
+void TickGroundSpeed() {
+    std::lock_guard<std::mutex> lock(g_groundSpeedMutex);
+    if (g_requestedGroundSpeed == 0.0f) return;
+    float actual = 0.0f;
+    // Resolve the current player every time: loading screens can replace it.
+    if (ReadGroundSpeed(actual) && std::fabs(actual - g_requestedGroundSpeed) > 0.001f)
+        WriteGroundSpeed(g_requestedGroundSpeed);
 }
 
 void LogFishingEvent(const std::string& event) {
@@ -1380,7 +1392,13 @@ HealingTargetSnapshot ReadHealingTarget() {
     Vector3 own{}, target{};
     result.distanceValid = ReadHealingPosition(GetLocalPlayer(), own)
         && ReadHealingPosition(object, target);
-    if (result.distanceValid) result.distance = Distance3D(own, target);
+    if (result.distanceValid) {
+        const float rawDistance = Distance3D(own, target);
+        // User-selected two-point fit: 10 -> 9.7, 36 -> 33.4 yards.
+        // Preserve near distances instead of applying an upward correction.
+        result.distance = (std::max)(0.0f,
+            (std::min)(rawDistance, 0.911538f * rawDistance + 0.584615f));
+    }
     uintptr_t attributes = 0;
     const uintptr_t base = reinterpret_cast<uintptr_t>(object);
     result.healthValid = ReadHealingMemory(base + 0x110, &attributes, 4) && attributes
@@ -2112,6 +2130,7 @@ LRESULT CALLBACK ClickToMoveMainThreadHook(int code, WPARAM wParam, LPARAM lPara
     if (code >= 0) {
         const CWPSTRUCT* message = reinterpret_cast<const CWPSTRUCT*>(lParam);
         if (message && message->message == kLootTickMessage) {
+            TickGroundSpeed();
             TickNearbyLoot();
             TickHealingTargetDisplay();
             static ULONGLONG lastChatCheck = 0;
@@ -2529,7 +2548,11 @@ std::string HandleRouteCommand(const std::string& input) {
 
         float speed = 0.0f;
         if (routeName == "reset") {
-            speed = kDefaultGroundSpeed;
+            std::lock_guard<std::mutex> lock(g_groundSpeedMutex);
+            g_requestedGroundSpeed = 0.0f;
+            return WriteGroundSpeed(kDefaultGroundSpeed)
+                ? "ground speed reset to 7; hold disabled"
+                : "ground speed hold disabled; player unavailable for reset";
         }
         else {
             std::istringstream valueParser(routeName);
@@ -2538,11 +2561,13 @@ std::string HandleRouteCommand(const std::string& input) {
                 return "error: speed must be a number from 1 to 100";
             }
         }
+        std::lock_guard<std::mutex> lock(g_groundSpeedMutex);
         if (!WriteGroundSpeed(speed)) {
             return "error: speed must be 1-100 and the player must be logged in";
         }
+        g_requestedGroundSpeed = speed;
         std::ostringstream result;
-        result << "ground speed set to " << speed;
+        result << "ground speed set to " << speed << "; hold enabled";
         return result.str();
     }
     if (command == "save") {
