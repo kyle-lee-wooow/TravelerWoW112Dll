@@ -17,7 +17,8 @@ Health and target GUID use the established +0x110 attribute table. Distances
 include both raw center separation and the current fitted distance.
 
 The local executable establishes enumeration as fastcall (ECX callback, EDX
-filter), guarded by an instruction signature and SEH. An unavailable player,
+filter); its callback receives ECX=filter and a stack GUID (fastcall adapter with
+unused EDX), guarded by an instruction signature and SEH. An unavailable player,
 map or failed enumeration produces available=false and no rows. Character,
 object manager or map changes invalidate the cache. healstate members gain z.
 

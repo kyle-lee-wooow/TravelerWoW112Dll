@@ -1428,7 +1428,8 @@ bool g_enemyTruncated = false;
 Vector3 g_enemyOrigin{};
 uint64_t g_enemyPlayer = 0;
 
-int __cdecl CollectHealingEnemy(uint64_t guid, int) {
+int __fastcall CollectHealingEnemy(int filter, int unused, uint64_t guid) {
+    // Enumerator passes filter in ECX and the 64-bit GUID on the stack (callee pops 8).
     void* object = HealingObjectByGuid(guid);
     const uintptr_t base = reinterpret_cast<uintptr_t>(object);
     uint32_t type = 0;
