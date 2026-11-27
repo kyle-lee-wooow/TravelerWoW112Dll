@@ -1423,6 +1423,108 @@ void AppendHealingTarget(std::ostringstream& json) {
         << ",\"cast_spell_id\":" << (target.castValid ? std::to_string(target.cast) : "null") << '}';
 }
 
+std::vector<std::string> g_enemyRows;
+bool g_enemyTruncated = false;
+Vector3 g_enemyOrigin{};
+uint64_t g_enemyPlayer = 0;
+
+int __cdecl CollectHealingEnemy(uint64_t guid, int) {
+    void* object = HealingObjectByGuid(guid);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(object);
+    uint32_t type = 0;
+    if (!object || !ReadHealingMemory(base + 0x14, &type, 4) || type != 3) return 1;
+    if (g_enemyRows.size() >= 200) { g_enemyTruncated = true; return 0; }
+    uintptr_t fields = 0, creature = 0, namePtr = 0;
+    uint32_t hp = 0, maxhp = 0;
+    uint64_t target = 0;
+    const bool fieldsValid = ReadHealingMemory(base + 0x110, &fields, 4) && fields;
+    const bool healthValid = fieldsValid && ReadHealingMemory(fields + 0x40, &hp, 4)
+        && ReadHealingMemory(fields + 0x58, &maxhp, 4) && maxhp && hp <= maxhp;
+    const bool targetValid = fieldsValid && ReadHealingMemory(fields + 0x28, &target, 8);
+    std::string name;
+    if (ReadHealingMemory(base + 0xB30, &creature, 4) && creature
+        && ReadHealingMemory(creature, &namePtr, 4) && namePtr) {
+        for (size_t i = 0; i < 255; ++i) {
+            char ch = 0;
+            if (!ReadHealingMemory(namePtr + i, &ch, 1)) { name.clear(); break; }
+            if (!ch) break;
+            name += ch;
+        }
+    }
+    Vector3 position{};
+    const bool positionValid = ReadHealingPosition(object, position);
+    const float raw = positionValid ? Distance3D(g_enemyOrigin, position) : 0;
+    const float corrected = (std::max)(0.0f, (std::min)(raw, 0.911538f * raw + 0.584615f));
+    std::ostringstream row;
+    row << "{\"guid\":\"" << guid << "\",\"name\":" << (name.empty() ? "null" : HealingJsonString(name))
+        << ",\"hp\":" << (healthValid ? std::to_string(hp) : "null")
+        << ",\"max_hp\":" << (healthValid ? std::to_string(maxhp) : "null")
+        << ",\"x\":" << (positionValid ? std::to_string(position.x) : "null")
+        << ",\"y\":" << (positionValid ? std::to_string(position.y) : "null")
+        << ",\"z\":" << (positionValid ? std::to_string(position.z) : "null")
+        << ",\"distance_raw\":" << (positionValid ? std::to_string(raw) : "null")
+        << ",\"distance\":" << (positionValid ? std::to_string(std::round(corrected * 10) / 10) : "null")
+        << ",\"target_guid\":" << (targetValid ? HealingJsonString(std::to_string(target)) : "null")
+        << ",\"targeting_player\":" << (targetValid ? (target == g_enemyPlayer ? "true" : "false") : "null")
+        << ",\"reaction\":null,\"hostile\":null,\"tapped\":null,\"tapped_by_player\":null}";
+    g_enemyRows.push_back(row.str());
+    return 1;
+}
+
+bool EnumerateHealingEnemies() {
+    // Verified against the local Turtle executable: callback in ECX, filter in EDX.
+    const unsigned char expected[] = {0xA1,0x14,0x14,0xB4,0x00,0x53,0x8B,0x98,0xAC,0,0,0};
+    unsigned char actual[sizeof(expected)]{};
+    if (!ReadHealingMemory(0x468380, actual, sizeof(actual)) || memcmp(actual, expected, sizeof(expected))) return false;
+    __try {
+        typedef int(__fastcall* Enumerate)(void*, int);
+        reinterpret_cast<Enumerate>(0x468380)(reinterpret_cast<void*>(CollectHealingEnemy), 0);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+std::string ReadHealingEnemies(const std::string& input) {
+    static uint64_t sequence = 0, session = 0;
+    static ULONGLONG sampled = 0;
+    static uintptr_t lastManager = 0;
+    static uint32_t lastMap = 0;
+    static bool scanValid = false;
+    std::istringstream args(input);
+    std::string command, extra;
+    uint64_t requested = 0;
+    size_t offset = 0;
+    args >> command;
+    if (input != "enemies" && (!(args >> requested >> offset) || (args >> extra) || !requested))
+        return "error: use enemies [sample_seq offset]";
+    uintptr_t manager = 0;
+    uint32_t map = 0;
+    const uint64_t player = GetPlayerGuid();
+    const bool available = player && ReadHealingMemory(address_ObjectManager, &manager, 4) && manager
+        && ReadHealingMemory(manager + 0xCC, &map, 4) && ReadHealingPosition(GetLocalPlayer(), g_enemyOrigin);
+    const bool changed = session != player || manager != lastManager || map != lastMap || !available;
+    if (changed) { g_enemyRows.clear(); sampled = 0; session = player; lastManager = manager; lastMap = map; }
+    const auto now = GetTickCount64();
+    if (requested && (changed || requested != sequence || !sampled)) return "error: enemies snapshot expired; restart with enemies";
+    if (!requested && (!sampled || now - sampled >= 100)) {
+        g_enemyRows.clear(); g_enemyTruncated = false; g_enemyPlayer = player;
+        scanValid = available && EnumerateHealingEnemies();
+        if (!scanValid) g_enemyRows.clear();
+        sampled = now; ++sequence;
+    }
+    if (offset > g_enemyRows.size()) return "error: invalid enemies offset";
+    const size_t end = (std::min)(offset + 40, g_enemyRows.size());
+    std::ostringstream json;
+    json << "{\"schema_version\":1,\"session\":\"" << player << "\",\"sample_seq\":" << sequence
+        << ",\"sample_time_ms\":" << sampled << ",\"available\":" << (available && scanValid ? "true" : "false")
+        << ",\"truncated\":" << (g_enemyTruncated ? "true" : "false")
+        << ",\"offset\":" << offset << ",\"next_offset\":" << (end < g_enemyRows.size() ? std::to_string(end) : "null")
+        << ",\"total\":" << g_enemyRows.size() << ",\"enemies\":[";
+    for (size_t i = offset; i < end; ++i) { if (i != offset) json << ','; json << g_enemyRows[i]; }
+    json << "]}";
+    return json.str();
+}
+
 void TickHealingTargetDisplay() {
     static ULONGLONG last = 0;
     static std::string previous;
@@ -1772,7 +1874,8 @@ std::string ReadHealingState() {
             << "\",\"distance\":" << (available ? std::to_string(Distance3D(ownPosition, memberPosition)) : "null")
             << ",\"dead\":" << (available ? (attributes.hp == 0 ? "true" : "false") : "null")
             << ",\"x\":" << (available ? std::to_string(memberPosition.x) : "null")
-            << ",\"y\":" << (available ? std::to_string(memberPosition.y) : "null");
+            << ",\"y\":" << (available ? std::to_string(memberPosition.y) : "null")
+            << ",\"z\":" << (available ? std::to_string(memberPosition.z) : "null");
         AppendHealingLos(json, ownPosition, memberPosition, available);
         AppendHealingUnitControl(json, available ? object : nullptr);
         if (available) {
@@ -1838,6 +1941,7 @@ int ExecuteNativeJump() {
 }
 
 std::string HealingMemoryCommand(const std::string& input) {
+    if (input == "enemies" || input.compare(0, 8, "enemies ") == 0) return ReadHealingEnemies(input);
     if (input == "speed" || input.compare(0, 6, "speed ") == 0) {
         std::istringstream parser(input);
         std::string command, value, extra;
@@ -2496,7 +2600,7 @@ std::string HandleRouteCommand(const std::string& input) {
             return "error: use chat start or chat poll <sequence>";
         return DispatchHealingMemory(input);
     }
-    if (command == "healstate" || command == "spells" || command == "cooldown" || command == "calibrate" || command == "calibrate_class") {
+    if (command == "enemies" || command == "healstate" || command == "spells" || command == "cooldown" || command == "calibrate" || command == "calibrate_class") {
         return DispatchHealingMemory(input);
     }
     if (command == "stopcast") {
@@ -2621,7 +2725,7 @@ DWORD WINAPI RouteControlThread(LPVOID) {
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
             1,
-            4096,
+            262144,
             4096,
             0,
             nullptr);
@@ -2639,7 +2743,9 @@ DWORD WINAPI RouteControlThread(LPVOID) {
             if (ReadFile(pipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0) {
                 const std::string response = HandleRouteCommand(std::string(buffer, bytesRead));
                 DWORD bytesWritten = 0;
-                WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &bytesWritten, nullptr);
+                if (!WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &bytesWritten, nullptr)
+                    || bytesWritten != response.size())
+                    OutputDebugStringA("TravelerWoW112Dll: incomplete command response write\n");
                 FlushFileBuffers(pipe);
             }
         }

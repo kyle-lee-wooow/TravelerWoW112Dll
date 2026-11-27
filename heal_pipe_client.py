@@ -18,7 +18,7 @@ def command(pid: int, text: str, timeout_ms: int = 2000) -> str:
         raise ValueError("Invalid PID or command length")
     data = text.encode("utf-8")
     request = ctypes.create_string_buffer(data)
-    response = ctypes.create_string_buffer(65536)
+    response = ctypes.create_string_buffer(262144)
     received = wintypes.DWORD()
     pipe = rf"\\.\pipe\TravelerRouteControl_PID_{pid}"
     if not _call(pipe, request, len(data), response, len(response),
@@ -32,6 +32,16 @@ def command(pid: int, text: str, timeout_ms: int = 2000) -> str:
 
 def healstate(pid: int) -> dict:
     return json.loads(command(pid, "healstate"))
+
+
+def enemies(pid: int, sample_seq: int = 0, offset: int = 0) -> dict:
+    """Read one page; continue with its sample_seq and next_offset, or restart on expiry."""
+    if type(sample_seq) is not int or type(offset) is not int or sample_seq < 0 or offset < 0:
+        raise ValueError("sample_seq and offset must be nonnegative integers")
+    if not sample_seq and offset:
+        raise ValueError("offset requires a sample_seq")
+    text = "enemies" if not sample_seq else f"enemies {sample_seq} {offset}"
+    return json.loads(command(pid, text))
 
 
 def chat_poll(pid: int, after_seq: int = 0) -> dict:
