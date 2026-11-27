@@ -1,5 +1,8 @@
 # Ground speed hold
 
+All speed commands (get/set/reset) are dispatched through the existing game
+main-thread hook, as is maintenance. Extra arguments are rejected.
+
 `speed <1-100>` writes and remembers the requested ground speed for this injected
 DLL session. The existing game main-thread maintenance tick checks the current
 player speed and reapplies the value when overwritten, including by slows.

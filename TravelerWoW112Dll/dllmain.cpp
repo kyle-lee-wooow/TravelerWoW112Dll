@@ -1838,6 +1838,35 @@ int ExecuteNativeJump() {
 }
 
 std::string HealingMemoryCommand(const std::string& input) {
+    if (input == "speed" || input.compare(0, 6, "speed ") == 0) {
+        std::istringstream parser(input);
+        std::string command, value, extra;
+        parser >> command >> value;
+        if (parser >> extra) return "error: use speed <1-100|get|reset>";
+        std::lock_guard<std::mutex> lock(g_groundSpeedMutex);
+        if (value.empty() || value == "get") {
+            float actual = 0;
+            if (!ReadGroundSpeed(actual)) return "error: player or ground speed is unavailable";
+            std::ostringstream result;
+            result << "ground speed=" << actual;
+            return result.str();
+        }
+        if (value == "reset") {
+            g_requestedGroundSpeed = 0;
+            return WriteGroundSpeed(kDefaultGroundSpeed)
+                ? "ground speed reset to 7; hold disabled"
+                : "ground speed hold disabled; player unavailable for reset";
+        }
+        float requested = 0;
+        char trailing = 0;
+        std::istringstream number(value);
+        if (!(number >> requested) || (number >> trailing) || !WriteGroundSpeed(requested))
+            return "error: speed must be 1-100 and the player must be logged in";
+        g_requestedGroundSpeed = requested;
+        std::ostringstream result;
+        result << "ground speed set to " << requested << "; hold enabled";
+        return result.str();
+    }
     if (input == "chat start") return EnsureChatObserver() ? "ok" : "error: chat observer unavailable";
     if (input.compare(0, 10, "chat poll ") == 0) {
         const std::string cursor = input.substr(10);
@@ -2536,39 +2565,7 @@ std::string HandleRouteCommand(const std::string& input) {
         return "error: use fish start or fish stop";
     }
     if (command == "speed") {
-        if (routeName == "get" || routeName.empty()) {
-            float speed = 0.0f;
-            if (!ReadGroundSpeed(speed)) {
-                return "error: player or ground speed is unavailable";
-            }
-            std::ostringstream result;
-            result << "ground speed=" << speed;
-            return result.str();
-        }
-
-        float speed = 0.0f;
-        if (routeName == "reset") {
-            std::lock_guard<std::mutex> lock(g_groundSpeedMutex);
-            g_requestedGroundSpeed = 0.0f;
-            return WriteGroundSpeed(kDefaultGroundSpeed)
-                ? "ground speed reset to 7; hold disabled"
-                : "ground speed hold disabled; player unavailable for reset";
-        }
-        else {
-            std::istringstream valueParser(routeName);
-            char trailing = 0;
-            if (!(valueParser >> speed) || (valueParser >> trailing)) {
-                return "error: speed must be a number from 1 to 100";
-            }
-        }
-        std::lock_guard<std::mutex> lock(g_groundSpeedMutex);
-        if (!WriteGroundSpeed(speed)) {
-            return "error: speed must be 1-100 and the player must be logged in";
-        }
-        g_requestedGroundSpeed = speed;
-        std::ostringstream result;
-        result << "ground speed set to " << speed << "; hold enabled";
-        return result.str();
+        return DispatchHealingMemory(input);
     }
     if (command == "save") {
         return SaveRoute() ? "saved: " + GetActiveRouteName() : "error: save failed";
