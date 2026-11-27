@@ -58,6 +58,13 @@ def cooldown(pid: int, spell_id: int) -> dict:
     return json.loads(command(pid, f"cooldown {spell_id}"))
 
 
+def luaquery(pid: int, expression: str) -> dict:
+    """Evaluate a single Lua expression; returns a typed JSON envelope, including errors."""
+    if not expression.strip() or any(c in expression for c in '\r\n\0'):
+        raise ValueError("Expression must be a nonempty single line without NUL")
+    return json.loads(command(pid, "luaquery " + expression))
+
+
 def spells(pid: int) -> list[str]:
     result = json.loads(command(pid, "spells"))
     names = result.get("spells")

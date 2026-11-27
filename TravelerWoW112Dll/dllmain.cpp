@@ -1940,7 +1940,59 @@ int ExecuteNativeJump() {
     __except (EXCEPTION_EXECUTE_HANDLER) { return 3; }
 }
 
+std::string ExecuteHealingLuaQuery(const std::string& expression) {
+    const auto error = [](const std::string& message) {
+        return std::string("{\"ok\":false,\"error\":") + HealingJsonString(message) + "}";
+    };
+    if (expression.empty() || expression.find_first_of("\r\n") != std::string::npos
+        || expression.find('\0') != std::string::npos) return error("expected a single-line expression");
+    if (!HealingRuntimeMatches() || !GetLocalPlayer()) return error("Lua runtime unavailable");
+    static uint64_t sequence = 0;
+    const std::string name = "Traveler112Query_" + std::to_string(GetCurrentProcessId()) + "_"
+        + std::to_string(GetTickCount64()) + "_" + std::to_string(++sequence);
+    const std::string key = QuoteHealingLua(name);
+    const std::string source = QuoteHealingLua("return (" + expression + ")");
+    const std::string script = "local function run() local f,e=loadstring(" + source +
+        "); if not f then return 'E:'..tostring(e) end; local ok,v=pcall(f); "
+        "if not ok then return 'E:'..tostring(v) end; local t=type(v); "
+        "if t=='nil' then return 'Z:' elseif t=='boolean' then return v and 'B:true' or 'B:false' "
+        "elseif t=='number' then if v~=v or v==math.huge or v==-math.huge then return 'E:nonfinite number' end; "
+        "return 'N:'..string.format('%.17g',v) elseif t=='string' then "
+        "if string.len(v)>16000 then return 'E:string exceeds 16000 bytes' end; "
+        "if string.find(v,string.char(0),1,true) then return 'E:embedded NUL is unsupported' end; "
+        "return 'S:'..v end; return 'E:unsupported result type: '..t end; "
+        "local ok,r=pcall(run); if not ok then r='E:query failed' end; "
+        "if string.len(r)>16002 then r='E:error exceeds result limit' end; setglobal(" + key + ",r)";
+    if (!ExecuteLuaOnMainThread(script.c_str())) {
+        ExecuteLuaOnMainThread(("setglobal(" + key + ",nil)").c_str());
+        return error("Lua dispatch failed");
+    }
+    char payload[16004]{};
+    const bool read = ReadHealingLuaGlobal(name.c_str(), nullptr, payload, sizeof(payload));
+    const bool cleaned = ExecuteLuaOnMainThread(("setglobal(" + key + ",nil)").c_str());
+    if (!read || !cleaned) return error("query result read or cleanup failed");
+    const std::string result(payload);
+    if (result.size() < 2 || result[1] != ':') return error("invalid query result");
+    const std::string value = result.substr(2);
+    if (result[0] == 'E') return error(value);
+    if (result[0] == 'Z') return "{\"ok\":true,\"type\":\"nil\",\"value\":null}";
+    if (result[0] == 'S') return "{\"ok\":true,\"type\":\"string\",\"value\":" + HealingJsonString(value) + "}";
+    if (result[0] == 'B' && (value == "true" || value == "false"))
+        return "{\"ok\":true,\"type\":\"boolean\",\"value\":" + value + "}";
+    if (result[0] == 'N') {
+        double number = 0; char extra = 0;
+        std::istringstream parser(value);
+        if (!(parser >> number) || (parser >> extra) || !std::isfinite(number)) return error("invalid number");
+        std::ostringstream json; json.precision(17);
+        json << "{\"ok\":true,\"type\":\"number\",\"value\":" << number << '}';
+        return json.str();
+    }
+    return error("invalid query result type");
+}
+
 std::string HealingMemoryCommand(const std::string& input) {
+    if (input == "luaquery") return ExecuteHealingLuaQuery("");
+    if (input.compare(0, 9, "luaquery ") == 0) return ExecuteHealingLuaQuery(input.substr(9));
     if (input == "enemies" || input.compare(0, 8, "enemies ") == 0) return ReadHealingEnemies(input);
     if (input == "speed" || input.compare(0, 6, "speed ") == 0) {
         std::istringstream parser(input);
@@ -2600,7 +2652,7 @@ std::string HandleRouteCommand(const std::string& input) {
             return "error: use chat start or chat poll <sequence>";
         return DispatchHealingMemory(input);
     }
-    if (command == "enemies" || command == "healstate" || command == "spells" || command == "cooldown" || command == "calibrate" || command == "calibrate_class") {
+    if (command == "luaquery" || command == "enemies" || command == "healstate" || command == "spells" || command == "cooldown" || command == "calibrate" || command == "calibrate_class") {
         return DispatchHealingMemory(input);
     }
     if (command == "stopcast") {
